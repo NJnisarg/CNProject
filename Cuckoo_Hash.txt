@@ -1,0 +1,45 @@
+Collisions are quite common in hashing. The 2 major collision resolution strategies used are :
+1. Separate chaining - store colliding elements in an auxiliary data structure like a linked list or a binary search tree.
+2. Open addressing -  allow elements to overflow out of their target bucket and into other spaces. In Open Addressing, all elements are stored in the hash table itself.
+
+Some early hashing schemes used :
+1. Chained Hashing : Uses separate chaining to handle collisions. 
+2. Linear probing: In linear probing, we linearly probe for next slot. Uses open addressing to handle collisions.
+3. Double hashing : We use another hash function hash2(x) and look for i*hash2(x) slot in i’th rotation. Uses open addressing to handle collisions.
+
+A number of (open addressing) hashing schemes that have been proposed share some key features - 
+1. Multiple-choice hashing: Give each element multiple choices for positions where it can reside in the hash table.
+2. Relocation hashing: Allow elements in the hash table to move after being placed.
+
+The main focus of these schemes is to reduce the average number of probes needed for finding a key in a (nearly) full table to a constant, rather than the O(log n) average exhibited by standard open addressing. 
+
+Cuckoo hashing applies the idea of multiple-choice and relocation together and guarantees constant worst case lookup time.
+1. Multiple-choice: We give a key two choices- h1(key) in one hash table and h2(key) in another hash table, for residing.
+2. Relocation: It may happen that h1(key) and h2(key) are preoccupied. This is resolved by imitating the Cuckoo bird: it pushes the other eggs out of the nest when it hatches. Analogously, inserting a new key into a cuckoo hashing table may push an older key to a different location. This leaves us with the problem of replacing the older key.
+If alternate position of older key is vacant, there is no problem.
+Otherwise, older key displaces another key. This continues until the procedure finds a vacant position, or enters a cycle. In case of cycle, new hash functions are chosen and the whole data structure is ‘rehashed’.
+
+
+We consider a dictionary that uses two hash tables, T1 and T2, each of length r, and two hash functions h1, h2 : U → {0, . . . , r − 1}. Every key x ∈ S is stored in cell h1(x) of T1 or h2(x) of T2, but never in both. Our lookup function is - 	
+	function lookup(x)
+		return T1[h1(x)] = x ∨ T2[h2(x)] = x
+	end
+Two table accesses for lookup is in fact optimal among all dictionaries using linear space.
+
+Using the notation x ↔ y to express that the values of variables x and y are swapped, the following code summarizes the insertion procedure.
+	procedure insert(x)
+		if lookup(x) then return
+		loop MaxLoop times
+			if T1[h1(x)] = ⊥ then { T1[h1(x)] ← x; return }
+			x ↔ T1[h1(x)]
+			if T2[h2(x)] = ⊥ then { T2[h2(x)] ← x; return }
+			x ↔ T2[h2(x)]
+		end loop
+		rehash(); insert(x)
+	end
+
+The lookup call preceding the insertion loop ensures robustness if the key to be inserted is already in the dictionary. A slightly faster implementation can be obtained if this is known not to occur.
+
+
+Cuckoo hashing gives better maximum search times than the methods based on probing.
+
