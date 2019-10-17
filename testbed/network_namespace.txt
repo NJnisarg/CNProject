@@ -1,0 +1,53 @@
+﻿sudo ip netns add client
+sudo ip netns add server
+
+
+sudo ip link add ethc type veth peer name ethr1
+sudo ip link add eths type veth peer name ethr2
+
+
+sudo ip link set ethc netns client
+sudo ip link set eths netns server
+
+
+sudo ip netns exec client ip link set ethc up
+sudo ip netns exec server ip link set eths up
+
+
+sudo ip netns exec client ip address add 10.0.0.1/24 dev ethc
+sudo ip netns exec server ip address add 10.0.2.1/24 dev eths
+
+
+sudo ip netns add router
+
+
+ sudo ip link set ethr1 netns router
+sudo ip link set ethr2 netns router
+
+
+sudo ip netns exec router ip link set ethr1 up
+sudo ip netns exec router ip link set ethr2 up
+
+
+sudo ip netns exec router ip address add 10.0.0.2/24 dev ethr1
+sudo ip netns exec router ip address add 10.0.2.2/24 dev ethr2
+
+
+sudo ip netns exec router ip link set lo up
+sudo ip netns exec client ip link set lo up
+sudo ip netns exec server ip link set lo up
+
+
+sudo ip netns exec client ip route add default via 10.0.0.2 dev ethc
+sudo ip netns exec server ip route add default via 10.0.2.2 dev eths
+
+
+sudo ip netns exec router sysctl -w net.ipv4.ip_forward=1
+
+
+sudo ip netns exec client ping 10.0.2.1
+
+
+sudo ip netns del client
+sudo ip netns del server
+sudo ip netns del router
