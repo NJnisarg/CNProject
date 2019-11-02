@@ -55,6 +55,7 @@ struct fq_codel_sched_data {
 	struct fq_codel_flow *flows;	/* Flows table [flows_cnt] */
 	// $$
 	u16     *hashtable;      /* The hashtable holding the indexes into the flow table */
+	u32		*random_seed;	/* Array of size 2 that will hold 2 random seeds for hash1 and hash2 */
 	u32		*backlogs;	/* backlog table [flows_cnt] */
 	u32		flows_cnt;	/* number of flows */
 	u32		quantum;	/* psched_mtu(qdisc_dev(sch)); */
@@ -104,7 +105,7 @@ static unsigned int fq_codel_hash_modified(const struct fq_codel_sched_data *q,
                                   struct sk_buff *skb, int table_num)
 {
 	printk(KERN_EMERG "FQ_CODEL: ENTERING HASH MODIFIED\n");
-    return 1024*table_num + reciprocal_scale(skb_get_hash(skb), q->flows_cnt);
+    return q->flows_cnt*table_num + reciprocal_scale(skb_get_hash_perturb(skb,q->random_seed[table_num]), q->flows_cnt);
 }
 
 // $$
@@ -681,6 +682,19 @@ static int fq_codel_init(struct Qdisc *sch, struct nlattr *opt,
             err = -ENOMEM;
             goto alloc_failure;
         }
+
+		// $$
+		/*
+		 * Allocation of memory for the random_seed
+		 */
+        q->random_seed = kvcalloc(2, sizeof(32), GFP_KERNEL);
+        if (!q->random_seed) {
+            err = -ENOMEM;
+            goto alloc_failure;
+        }
+		q->random_seed[0] = get_random_u32();
+		q->random_seed[1] = get_random_u32();
+
 		for (i = 0; i < q->flows_cnt; i++) {
 			struct fq_codel_flow *flow = q->flows + i;
 
