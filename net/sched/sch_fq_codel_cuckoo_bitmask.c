@@ -54,6 +54,7 @@ struct fq_codel_sched_data {
 	struct tcf_block *block;
 	// $$
 	u16     *hashtable;      /* The hashtable holding the indexes into the flow table */
+	u32		*random_seed;	/* Array of size 2 that will hold 2 random seeds for hash1 and hash2 */
 	u32     *empty_flow_mask;    /* The bitmask array to maintain the empty flows */
 	u32     flow_mask_index;     /* The 2 level index to find out the element that has atleast one empty flow. More like a lookup */
 	struct fq_codel_flow *flows;	/* Flows table [flows_cnt] */
@@ -105,6 +106,8 @@ static void print_internal_info(const struct fq_codel_sched_data *q)
 static unsigned int get_next_empty_flow(const struct fq_codel_sched_data *q)
 {
 	printk(KERN_EMERG "FQ_CODEL: ENTERING GET NEXT EMPTY FLOW \n");
+	if(ffs(q->flow_mask_index)==0)
+		return 0;
     u8 right_most_set_zone = 32 - ffs(q->flow_mask_index);
 	printk(KERN_EMERG "FQ_CODEL: Right most set zone: %d \n", right_most_set_zone);
     return right_most_set_zone*32 + (32-ffs(q->empty_flow_mask[right_most_set_zone]));
@@ -147,7 +150,7 @@ static unsigned int fq_codel_hash_modified(const struct fq_codel_sched_data *q,
                                   struct sk_buff *skb, int table_num)
 {
 	printk(KERN_EMERG "FQ_CODEL: ENTERING HASH MODIFIED\n");
-    return 1024*table_num + reciprocal_scale(skb_get_hash(skb), q->flows_cnt);
+    return q->flows_cnt*table_num + reciprocal_scale(skb_get_hash_perturb(skb,q->random_seed[table_num]), q->flows_cnt);
 }
 
 // $$
@@ -170,10 +173,12 @@ static void cuckoo_rehash(const struct fq_codel_sched_data *q,
 
         //No. of iterations increased by 1
         i++;
-        if(i>=(q->flows_cnt)/2)
+        if(i>=(q->flows_cnt))
             break;
 
         skb = (q->flows[value_to_insert-1].head);
+		if(skb==NULL)
+			return;
         temp_index = fq_codel_hash_modified(q,skb,1) - 1;
         if(q->hashtable[temp_index]==0){
             q->hashtable[temp_index]=value_to_insert;
@@ -183,6 +188,8 @@ static void cuckoo_rehash(const struct fq_codel_sched_data *q,
             swap(value_to_insert,q->hashtable[temp_index]);
 
         skb = (q->flows[value_to_insert-1].head);
+		if(skb==NULL)
+			return;
     }
 }
 
@@ -199,6 +206,7 @@ static unsigned int fq_codel_cuckoo_hash(const struct fq_codel_sched_data *q,
     unsigned int hash1 = fq_codel_hash_modified(q,skb,0);
     unsigned int hash2 = fq_codel_hash_modified(q,skb,1);
 	printk(KERN_EMERG "FQ_CODEL: values of hash1 and hash2: %d %d \n", hash1, hash2);
+
     int idx, idx2;
 
     if(q->hashtable[hash1]==0 && q->hashtable[hash2]==0)
@@ -213,29 +221,42 @@ static unsigned int fq_codel_cuckoo_hash(const struct fq_codel_sched_data *q,
     {
 		printk(KERN_EMERG "FQ_CODEL:1 0 ==> H1 Non empty and H2 empty, h1:%d h2:%d \n", hash1, hash2);
         idx = q->hashtable[hash1] - 1;
+
+		if(q->flows[idx].head==NULL)
+			return q->hashtable[hash1];
+
         if(skb_get_hash(q->flows[idx].head)==skb_get_hash(skb))
             return q->hashtable[hash1];
-        else{
-            q->hashtable[hash2] = get_next_empty_flow(q) + 1;
-            return q->hashtable[hash2];
-        }
+
+		q->hashtable[hash2] = get_next_empty_flow(q) + 1;
+		return q->hashtable[hash2];
     }
 
     if(q->hashtable[hash1] == 0 && q->hashtable[hash2] != 0)
     {
 		printk(KERN_EMERG "FQ_CODEL:0 1 ==> H1 empty and H2 non empty, h1:%d h2:%d \n", hash1, hash2);
         idx = q->hashtable[hash2] - 1;
+
+		if(q->flows[idx].head==NULL)
+			return q->hashtable[hash2];
+
         if(skb_get_hash(q->flows[idx].head)==skb_get_hash(skb))
             return q->hashtable[hash2];
-        else{
-            q->hashtable[hash1] = get_next_empty_flow(q) + 1;
-            return q->hashtable[hash1];
-        }
+        
+		q->hashtable[hash1] = get_next_empty_flow(q) + 1;
+		return q->hashtable[hash1];
+        
     }
 
 	printk(KERN_EMERG "FQ_CODEL:1 1 ==> Both Non empty, h1:%d h2:%d \n", hash1, hash2);
     idx = q->hashtable[hash1] - 1;
     idx2 = q->hashtable[hash2] - 1;
+
+	if(q->flows[idx].head==NULL)
+		return q->hashtable[hash1];
+	
+	if(q->flows[idx2].head==NULL)
+		return q->hashtable[hash2];
 
     if(skb_get_hash(q->flows[idx].head)==skb_get_hash(skb))
         return q->hashtable[hash1];
@@ -247,17 +268,18 @@ static unsigned int fq_codel_cuckoo_hash(const struct fq_codel_sched_data *q,
      * We will put it at hashtable[hash1] location.
      * Then we will carry out rehashing of the other values in cuckoo fashion.
      */
-    // unsigned int value_to_insert = get_next_empty_flow(q) + 1;
+    unsigned int value_to_insert = get_next_empty_flow(q) + 1;
 
-    // // Write that loop here to rehash stuff in the hashtable.
-    // // Remember rehashing is simply moving the flows table indexes around in our hashtable. We are touching no flows here.
-    // cuckoo_rehash(q,skb,value_to_insert);
+    // Write that loop here to rehash stuff in the hashtable.
+    // Remember rehashing is simply moving the flows table indexes around in our hashtable. We are touching no flows here.
+    cuckoo_rehash(q,skb,value_to_insert);
 
-    // return value_to_insert;
+    return value_to_insert;
 
-	// For now let the collision happen
-	return q->hashtable[hash1];
+	// If you don't want to rehash and let the collision happen
+	// return q->hashtable[hash1];
 }
+
 
 static unsigned int fq_codel_classify(struct sk_buff *skb, struct Qdisc *sch,
 				      int *qerr)
@@ -488,8 +510,6 @@ static void drop_func(struct sk_buff *skb, void *ctx)
 static struct sk_buff *fq_codel_dequeue(struct Qdisc *sch)
 {
 
-	printk(KERN_EMERG "FQ_CODEL: ENTERING DEQUEUE \n");
-
 	struct fq_codel_sched_data *q = qdisc_priv(sch);
 	struct sk_buff *skb;
 	struct fq_codel_flow *flow;
@@ -529,6 +549,7 @@ begin:
 			list_del_init(&flow->flowchain);
 		goto begin;
 	}
+	printk(KERN_EMERG "FQ_CODEL: ENTERING DEQUEUE NOT NULL \n");
 	qdisc_bstats_update(sch, skb);
 	flow->deficit -= qdisc_pkt_len(skb);
 	/* We cant call qdisc_tree_reduce_backlog() if our qlen is 0,
@@ -541,31 +562,34 @@ begin:
 		q->cstats.drop_len = 0;
 	}
 
-	/*
-	 * Checking if the flow is empty.
-	 * If yes, then marking the hashtable entry belonging to the flow as 0
-	 * Also, marking the flow as empty
-	 */
 	// $$
-	// if(list_empty(&flow->flowchain))
-    // {
-	// 	printk(KERN_EMERG "FQ_CODEL: Entering list empty segment! \n");
-	//     u32 idx = (flow - &q->flows[0])/ sizeof(struct fq_codel_flow);
-	//     u32 hash1 = fq_codel_hash_modified(q,skb,0);
-    //     u32 hash2 = fq_codel_hash_modified(q,skb,1);
+	/*
+	* Marking the flow as empty and setting the hashtable entry to 0
+	*/
+	if(flow->head==NULL)
+	{
+		printk(KERN_EMERG "Going to mark the flow as empty \n");
+		int empty_id = (flow - &q->flows[0]);
+		printk(KERN_EMERG "The empty ID: %d \n", empty_id);
+		mark_flow_as_empty(q, empty_id);
+		printk(KERN_EMERG "Marked the flow as empty! \n");
+		
+		int h1 = fq_codel_hash_modified(q,skb,0);
+		int h2 = fq_codel_hash_modified(q,skb,1);
 
-	// 	printk(KERN_EMERG "FQ_CODEL: Empty flow idx: %d \n", idx);
+		printk(KERN_EMERG "h1: %d and h2:%d and table[h1]:%d and table[h2]:%d \n", h1,h2, q->hashtable[h1], q->hashtable[h2]);
+		if(q->hashtable[h1]==(empty_id+1))
+		{
+			printk(KERN_EMERG "Went to h1 \n");
+			q->hashtable[h1] = 0;
+		}
+		if(q->hashtable[h2]==(empty_id+1))
+		{
+			printk(KERN_EMERG "Went to h2 \n");
+			q->hashtable[h2] = 0;
+		}
+	}
 
-    //     if(q->hashtable[hash1]==(idx+1)){
-    //         q->hashtable[hash1] = 0;
-    //         mark_flow_as_empty(q,idx);
-
-    //     }
-    //     else if(q->hashtable[hash2]==(idx+1)) {
-    //         q->hashtable[hash2] = 0;
-    //         mark_flow_as_empty(q,idx);
-    //     }
-    // }
 	printk(KERN_EMERG "SKB that was dequeued:%p \n", skb);
 	return skb;
 }
@@ -761,6 +785,17 @@ static int fq_codel_init(struct Qdisc *sch, struct nlattr *opt,
             err = -ENOMEM;
             goto alloc_failure;
         }
+		// $$
+		/*
+		 * Allocation of memory for the random_seed
+		 */
+        q->random_seed = kvcalloc(2, sizeof(32), GFP_KERNEL);
+        if (!q->random_seed) {
+            err = -ENOMEM;
+            goto alloc_failure;
+        }
+		q->random_seed[0] = get_random_u32();
+		q->random_seed[1] = get_random_u32();
         // $$
         /* We have 1024 flows. Hence 32*32 = 1024 bits allocated */
         q->empty_flow_mask = kvcalloc(32, sizeof(u32), GFP_KERNEL);
