@@ -1,0 +1,233 @@
+diff --git a/sch_fq_codel.c b/sch_fq_codel_cuckoo_naive.c
+index d59fbcc..3322265 100644
+--- a/sch_fq_codel.c
++++ b/sch_fq_codel_cuckoo_naive.c
+@@ -53,6 +53,9 @@ struct fq_codel_sched_data {
+ 	struct tcf_proto __rcu *filter_list; /* optional external classifier */
+ 	struct tcf_block *block;
+ 	struct fq_codel_flow *flows;	/* Flows table [flows_cnt] */
++	// $$
++	u16     *hashtable;      /* The hashtable holding the indexes into the flow table */
++	u32		*random_seed;	/* Array of size 2 that will hold 2 random seeds for hash1 and hash2 */
+ 	u32		*backlogs;	/* backlog table [flows_cnt] */
+ 	u32		flows_cnt;	/* number of flows */
+ 	u32		quantum;	/* psched_mtu(qdisc_dev(sch)); */
+@@ -69,12 +72,155 @@ struct fq_codel_sched_data {
+ 	struct list_head old_flows;	/* list of old flows */
+ };
+ 
++// $$
++/*
++ * This function simply gives you the empty flow.
++ * It does not flip the bit to mark it as non-empty.
++ * A separate function handles the bit flip
++ * It is 0-indexed
++ */
++static unsigned int get_next_empty_flow(const struct fq_codel_sched_data *q)
++{
++	int i;
++	for(i=0;i<q->flows_cnt;i++)
++	{
++		if(q->flows[i].head==NULL)
++		{
++			return i;
++		}
++	}
++	return 0;
++}
++
+ static unsigned int fq_codel_hash(const struct fq_codel_sched_data *q,
+ 				  struct sk_buff *skb)
+ {
+ 	return reciprocal_scale(skb_get_hash(skb), q->flows_cnt);
+ }
+ 
++// $$
++static unsigned int fq_codel_hash_modified(const struct fq_codel_sched_data *q,
++                                  struct sk_buff *skb, int table_num)
++{
++    return q->flows_cnt*table_num + reciprocal_scale(skb_get_hash_perturb(skb,q->random_seed[table_num]), q->flows_cnt);
++}
++
++// $$
++static void cuckoo_rehash(const struct fq_codel_sched_data *q,
++                   struct sk_buff *skb, int value_to_insert)
++{
++    int temp_index,i;
++    for(i=0;i<(q->flows_cnt);i++){
++
++        temp_index = fq_codel_hash_modified(q,skb,0);
++        if(q->hashtable[temp_index]==0){
++            q->hashtable[temp_index]=value_to_insert;
++            return;
++        }
++        else
++            swap(value_to_insert,q->hashtable[temp_index]);
++
++        //No. of iterations increased by 1
++        i++;
++        if(i>=(q->flows_cnt))
++            break;
++
++        skb = (q->flows[value_to_insert-1].head);
++		if(skb==NULL)
++			return;
++        temp_index = fq_codel_hash_modified(q,skb,1);
++        if(q->hashtable[temp_index]==0){
++            q->hashtable[temp_index]=value_to_insert;
++            return;
++        }
++        else
++            swap(value_to_insert,q->hashtable[temp_index]);
++
++        skb = (q->flows[value_to_insert-1].head);
++		if(skb==NULL)
++			return;
++    }
++}
++
++// $$
++static unsigned int fq_codel_cuckoo_hash(const struct fq_codel_sched_data *q,
++                                         struct sk_buff *skb)
++{
++    /*
++     * First calculate the hash1 and hash2 values.
++     */
++    unsigned int hash1 = fq_codel_hash_modified(q,skb,0);
++    unsigned int hash2 = fq_codel_hash_modified(q,skb,1);
++
++    int idx, idx2;
++
++    if(q->hashtable[hash1]==0 && q->hashtable[hash2]==0)
++    {
++        q->hashtable[hash1] = get_next_empty_flow(q) + 1;
++        return q->hashtable[hash1];
++    }
++
++    if(q->hashtable[hash1] != 0 && q->hashtable[hash2]==0)
++    {
++        idx = q->hashtable[hash1] - 1;
++
++		if(q->flows[idx].head==NULL)
++			return q->hashtable[hash1];
++
++        if(skb_get_hash(q->flows[idx].head)==skb_get_hash(skb))
++            return q->hashtable[hash1];
++
++		q->hashtable[hash2] = get_next_empty_flow(q) + 1;
++		return q->hashtable[hash2];
++    }
++
++    if(q->hashtable[hash1] == 0 && q->hashtable[hash2] != 0)
++    {
++        idx = q->hashtable[hash2] - 1;
++
++		if(q->flows[idx].head==NULL)
++			return q->hashtable[hash2];
++
++        if(skb_get_hash(q->flows[idx].head)==skb_get_hash(skb))
++            return q->hashtable[hash2];
++        
++		q->hashtable[hash1] = get_next_empty_flow(q) + 1;
++		return q->hashtable[hash1];
++        
++    }
++
++    idx = q->hashtable[hash1] - 1;
++    idx2 = q->hashtable[hash2] - 1;
++
++	if(q->flows[idx].head==NULL)
++		return q->hashtable[hash1];
++
++	if(skb_get_hash(q->flows[idx].head)==skb_get_hash(skb))
++        return q->hashtable[hash1];
++	
++	if(q->flows[idx2].head==NULL)
++		return q->hashtable[hash2];
++
++    if(skb_get_hash(q->flows[idx2].head)==skb_get_hash(skb))
++        return q->hashtable[hash2];
++
++    /*
++     * If none of the above things prevail, then we have to allocate a new physical flow from the flows table to this packet.
++     * We will put it at hashtable[hash1] location.
++     * Then we will carry out rehashing of the other values in cuckoo fashion.
++     */
++    unsigned int value_to_insert = get_next_empty_flow(q) + 1;
++
++    // Write that loop here to rehash stuff in the hashtable.
++    // Remember rehashing is simply moving the flows table indexes around in our hashtable. We are touching no flows here.
++    cuckoo_rehash(q,skb,value_to_insert);
++
++    return value_to_insert;
++
++	// If you don't want to rehash and let the collision happen
++	// return q->hashtable[hash1];
++}
++
+ static unsigned int fq_codel_classify(struct sk_buff *skb, struct Qdisc *sch,
+ 				      int *qerr)
+ {
+@@ -90,7 +236,7 @@ static unsigned int fq_codel_classify(struct sk_buff *skb, struct Qdisc *sch,
+ 
+ 	filter = rcu_dereference_bh(q->filter_list);
+ 	if (!filter)
+-		return fq_codel_hash(q, skb) + 1;
++		return fq_codel_cuckoo_hash(q, skb);
+ 
+ 	*qerr = NET_XMIT_SUCCESS | __NET_XMIT_BYPASS;
+ 	result = tcf_classify(skb, filter, &res, false);
+@@ -193,6 +339,7 @@ static int fq_codel_enqueue(struct sk_buff *skb, struct Qdisc *sch,
+ 	bool memory_limited;
+ 
+ 	idx = fq_codel_classify(skb, sch, &ret);
++
+ 	if (idx == 0) {
+ 		if (ret & __NET_XMIT_BYPASS)
+ 			qdisc_qstats_drop(sch);
+@@ -282,6 +429,7 @@ static void drop_func(struct sk_buff *skb, void *ctx)
+ 
+ static struct sk_buff *fq_codel_dequeue(struct Qdisc *sch)
+ {
++
+ 	struct fq_codel_sched_data *q = qdisc_priv(sch);
+ 	struct sk_buff *skb;
+ 	struct fq_codel_flow *flow;
+@@ -356,6 +504,8 @@ static void fq_codel_reset(struct Qdisc *sch)
+ 		codel_vars_init(&flow->cvars);
+ 	}
+ 	memset(q->backlogs, 0, q->flows_cnt * sizeof(u32));
++	// $$
++    memset(q->hashtable, 0, 2 * q->flows_cnt * sizeof(u16));
+ 	sch->q.qlen = 0;
+ 	sch->qstats.backlog = 0;
+ 	q->memory_usage = 0;
+@@ -497,6 +647,28 @@ static int fq_codel_init(struct Qdisc *sch, struct nlattr *opt,
+ 			err = -ENOMEM;
+ 			goto alloc_failure;
+ 		}
++		// $$
++		/*
++		 * Allocation of memory for the hashtable
++		 */
++        q->hashtable = kvcalloc(2*q->flows_cnt, sizeof(u16), GFP_KERNEL);
++        if (!q->hashtable) {
++            err = -ENOMEM;
++            goto alloc_failure;
++        }
++
++		// $$
++		/*
++		 * Allocation of memory for the random_seed
++		 */
++        q->random_seed = kvcalloc(2, sizeof(32), GFP_KERNEL);
++        if (!q->random_seed) {
++            err = -ENOMEM;
++            goto alloc_failure;
++        }
++		q->random_seed[0] = get_random_u32();
++		q->random_seed[1] = get_random_u32();
++
+ 		for (i = 0; i < q->flows_cnt; i++) {
+ 			struct fq_codel_flow *flow = q->flows + i;
+ 
