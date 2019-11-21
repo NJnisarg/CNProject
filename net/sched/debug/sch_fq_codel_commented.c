@@ -130,7 +130,6 @@ static inline struct sk_buff *dequeue_head(struct fq_codel_flow *flow)
 static inline void flow_queue_add(struct fq_codel_flow *flow,
 				  struct sk_buff *skb)
 {
-	printk(KERN_EMERG "Adding flow to queue \n");
 	if (flow->head == NULL)
 		flow->head = skb;
 	else
@@ -142,7 +141,6 @@ static inline void flow_queue_add(struct fq_codel_flow *flow,
 static unsigned int fq_codel_drop(struct Qdisc *sch, unsigned int max_packets,
 				  struct sk_buff **to_free)
 {
-	printk(KERN_EMERG "Dropping packets from queue \n");
 	struct fq_codel_sched_data *q = qdisc_priv(sch);
 	struct sk_buff *skb;
 	unsigned int maxbacklog = 0, idx = 0, i, len;
@@ -199,7 +197,7 @@ static int fq_codel_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 
 	idx = fq_codel_classify(skb, sch, &ret);
 
-	printk(KERN_EMERG "ENQUEUE INFO, idx_count : idx: %d \n", idx);
+	printk(KERN_EMERG "FQ_CODEL: value from fq_codel_classify: idx: %d \n", idx);
 
 	if (idx == 0) {
 		if (ret & __NET_XMIT_BYPASS)
@@ -220,7 +218,6 @@ static int fq_codel_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		q->new_flow_count++;
 		flow->deficit = q->quantum;
 		flow->dropped = 0;
-		printk(KERN_EMERG "ENQUEUE INFO, new flow count: flow count: %d \n", q->new_flow_count);
 	}
 	get_codel_cb(skb)->mem_usage = skb->truesize;
 	q->memory_usage += get_codel_cb(skb)->mem_usage;
@@ -270,8 +267,6 @@ static struct sk_buff *dequeue_func(struct codel_vars *vars, void *ctx)
 	struct fq_codel_flow *flow;
 	struct sk_buff *skb = NULL;
 
-	printk(KERN_EMERG "DEQUEUE FUNC\n");
-
 	flow = container_of(vars, struct fq_codel_flow, cvars);
 	if (flow->head) {
 		skb = dequeue_head(flow);
@@ -307,7 +302,7 @@ begin:
 		if (list_empty(head))
 			return NULL;
 	}
-	printk(KERN_EMERG "FQ_CODEL: ENTERING DEQUEUE \n");
+	printk(KERN_EMERG "FQ_CODEL: ENTERING DEQUEUE =============================== \n");
 	flow = list_first_entry(head, struct fq_codel_flow, flowchain);
 
 	if (flow->deficit <= 0) {
@@ -356,7 +351,6 @@ static void fq_codel_flow_purge(struct fq_codel_flow *flow)
 
 static void fq_codel_reset(struct Qdisc *sch)
 {
-	printk(KERN_EMERG "INSIDE fq_codel\n");
 	struct fq_codel_sched_data *q = qdisc_priv(sch);
 	int i;
 
@@ -390,7 +384,6 @@ static const struct nla_policy fq_codel_policy[TCA_FQ_CODEL_MAX + 1] = {
 static int fq_codel_change(struct Qdisc *sch, struct nlattr *opt,
 			   struct netlink_ext_ack *extack)
 {
-	printk(KERN_EMERG "INSIDE fq_codel_change \n");
 	struct fq_codel_sched_data *q = qdisc_priv(sch);
 	struct nlattr *tb[TCA_FQ_CODEL_MAX + 1];
 	int err;
@@ -476,8 +469,6 @@ static int fq_codel_init(struct Qdisc *sch, struct nlattr *opt,
 	struct fq_codel_sched_data *q = qdisc_priv(sch);
 	int i;
 	int err;
-
-	printk(KERN_EMERG "FQ_CODEL: ENTERING INIT \n");
 
 	sch->limit = 10*1024;
 	q->flows_cnt = 1024;

@@ -50,5 +50,18 @@ sudo ip netns exec server ip route add default via 10.0.2.2 dev eths
 # Enable forwarding
 sudo ip netns exec router sysctl -w net.ipv4.ip_forward=1
 
+# Attaching the qdisc
+# sudo ip netns exec router tc qdisc add dev ethr2 root handle 8000: netem rate 1Mbit delay 10s
+sudo ip netns exec router tc qdisc add dev ethr2 parent root handle 8001: fq_codel flows 8
+
+# # Attaching the qdisc
+# sudo ip netns exec client tc qdisc add dev ethc root handle 8002: netem rate 100Mbit
+
+# # Attaching the qdisc
+# sudo ip netns exec router tc qdisc add dev ethr1 root handle 8003: netem rate 100Mbit
+
+# # Attaching the qdisc
+# sudo ip netns exec server tc qdisc add dev eths root handle 8004: netem rate 1Mbit
+
 # Uncomment to test ping
 # sudo ip netns exec client ping 10.0.2.1

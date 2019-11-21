@@ -73,6 +73,36 @@ struct fq_codel_sched_data {
 };
 
 // $$
+static void print_enqueue_state(const struct fq_codel_sched_data *q, struct sk_buff *skb, int h1, int h2, int idx)
+{
+	int i = 0;
+	printk(KERN_EMERG "FQ_CODEL: printing after enqueue \n");
+
+	printk(KERN_EMERG "FQ_CODEL: H1: %d H2: %d idx: %d \n", h1, h2, idx);
+
+	printk(KERN_EMERG "FQ_CODEL: Hashtable state \n");
+	for(i=0;i<2*q->flows_cnt;i++)
+	{
+		printk(KERN_EMERG "FQ_CODEL: %d \n", q->hashtable[i]);
+	}
+
+	printk(KERN_EMERG "FQ_CODEL: Flow table state \n");
+	for(i=0;i<q->flows_cnt;i++)
+	{
+		int num_packets = 0;
+		int pkt_id = -1;
+		struct sk_buff *temp = q->flows[i].head;
+		while(temp != NULL)
+		{
+			pkt_id = skb_get_hash(temp);
+			num_packets++;
+			temp = temp->next;
+		}
+		printk(KERN_EMERG "FQ_CODEL: index: %d num_packets: %d pkt_id: %d \n", i+1, num_packets, pkt_id);
+	}
+}
+
+// $$
 /*
  * This function simply gives you the empty flow.
  * It does not flip the bit to mark it as non-empty.
@@ -109,6 +139,9 @@ static unsigned int fq_codel_hash_modified(const struct fq_codel_sched_data *q,
 static void cuckoo_rehash(const struct fq_codel_sched_data *q,
                    struct sk_buff *skb, int value_to_insert)
 {
+
+	printk(KERN_EMERG "FQ_CODEL: ENTERING CUCKOO REHASH \n");
+
     int temp_index,i;
     for(i=0;i<(q->flows_cnt);i++){
 
@@ -149,19 +182,26 @@ static unsigned int fq_codel_cuckoo_hash(const struct fq_codel_sched_data *q,
     /*
      * First calculate the hash1 and hash2 values.
      */
+
+	printk(KERN_EMERG "FQ_CODEL: ENTERING CUCKOO HASH \n");
+
     unsigned int hash1 = fq_codel_hash_modified(q,skb,0);
     unsigned int hash2 = fq_codel_hash_modified(q,skb,1);
+	printk(KERN_EMERG "FQ_CODEL: values of hash1 and hash2: %d %d \n", hash1, hash2);
 
     int idx, idx2;
 
     if(q->hashtable[hash1]==0 && q->hashtable[hash2]==0)
     {
+		printk(KERN_EMERG "FQ_CODEL:0 0 ==> BOTH SLOTS EMPTY, h1:%d h2:%d \n", hash1, hash2);
         q->hashtable[hash1] = get_next_empty_flow(q) + 1;
+		printk(KERN_EMERG "FQ_CODEL: value in hashtable1 on slot %d is %d \n", hash1, q->hashtable[hash1]);
         return q->hashtable[hash1];
     }
 
     if(q->hashtable[hash1] != 0 && q->hashtable[hash2]==0)
     {
+		printk(KERN_EMERG "FQ_CODEL:1 0 ==> H1 Non empty and H2 empty, h1:%d h2:%d \n", hash1, hash2);
         idx = q->hashtable[hash1] - 1;
 
 		if(q->flows[idx].head==NULL)
@@ -176,6 +216,7 @@ static unsigned int fq_codel_cuckoo_hash(const struct fq_codel_sched_data *q,
 
     if(q->hashtable[hash1] == 0 && q->hashtable[hash2] != 0)
     {
+		printk(KERN_EMERG "FQ_CODEL:0 1 ==> H1 empty and H2 non empty, h1:%d h2:%d \n", hash1, hash2);
         idx = q->hashtable[hash2] - 1;
 
 		if(q->flows[idx].head==NULL)
@@ -189,6 +230,7 @@ static unsigned int fq_codel_cuckoo_hash(const struct fq_codel_sched_data *q,
         
     }
 
+	printk(KERN_EMERG "FQ_CODEL:1 1 ==> Both Non empty, h1:%d h2:%d \n", hash1, hash2);
     idx = q->hashtable[hash1] - 1;
     idx2 = q->hashtable[hash2] - 1;
 
@@ -331,6 +373,7 @@ static unsigned int fq_codel_drop(struct Qdisc *sch, unsigned int max_packets,
 static int fq_codel_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 			    struct sk_buff **to_free)
 {
+	printk(KERN_EMERG "FQ_CODEL: ENTERING ENQUEUE ==================================== \n");
 	struct fq_codel_sched_data *q = qdisc_priv(sch);
 	unsigned int idx, prev_backlog, prev_qlen;
 	struct fq_codel_flow *flow;
@@ -339,6 +382,8 @@ static int fq_codel_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	bool memory_limited;
 
 	idx = fq_codel_classify(skb, sch, &ret);
+
+	printk(KERN_EMERG "FQ_CODEL: idx(from classify): %d \n", idx);
 
 	if (idx == 0) {
 		if (ret & __NET_XMIT_BYPASS)
@@ -353,6 +398,8 @@ static int fq_codel_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	flow_queue_add(flow, skb);
 	q->backlogs[idx] += qdisc_pkt_len(skb);
 	qdisc_qstats_backlog_inc(sch, skb);
+
+	// print_enqueue_state(q, skb, fq_codel_hash_modified(q, skb,0), fq_codel_hash_modified(q, skb,1), idx);
 
 	if (list_empty(&flow->flowchain)) {
 		list_add_tail(&flow->flowchain, &q->new_flows);
@@ -480,6 +527,9 @@ begin:
 		q->cstats.drop_count = 0;
 		q->cstats.drop_len = 0;
 	}
+
+	printk(KERN_EMERG "FQ_CODEL: ENTERING DEQUEUE NOT NULL\n");
+	printk(KERN_EMERG "The Packet dequeued is: %p",skb);
 	return skb;
 }
 
@@ -491,6 +541,7 @@ static void fq_codel_flow_purge(struct fq_codel_flow *flow)
 
 static void fq_codel_reset(struct Qdisc *sch)
 {
+	printk(KERN_EMERG "INSIDE fq_codel\n");
 	struct fq_codel_sched_data *q = qdisc_priv(sch);
 	int i;
 
@@ -611,6 +662,8 @@ static int fq_codel_init(struct Qdisc *sch, struct nlattr *opt,
 	struct fq_codel_sched_data *q = qdisc_priv(sch);
 	int i;
 	int err;
+
+	printk(KERN_EMERG "FQ_CODEL: ENTERING INIT \n");
 
 	sch->limit = 10*1024;
 	q->flows_cnt = 1024;
